@@ -1,0 +1,42 @@
+cmake_minimum_required(VERSION 2.18.12)
+project(OpenCL)
+
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED TRUE)
+set(CMAKE_C_EXTENSIONS OFF)
+
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE "Debug")
+endif()
+
+set(GNU_C_WARNINGS "-Wall -Wextra -Wshadow -Wdouble-promotion -Wrestrict -Wconversion -Wsign-conversion -Wpedantic -Wjump-misses-init")
+set(GNU_FLAGS_DEBUG "-ggdb3")
+if(${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
+    set(GNU_FLAGS_DEBUG "${GNU_FLAGS_DEBUG} -fsanitize=address -fsanitize=undefined")
+endif()
+set(GNU_FLAGS_RELEASE "-O3 -DNDEBUG")
+set(GNU_C_FLAGS_DEBUG "${GNU_C_WARNINGS} ${GNU_FLAGS_DEBUG}")
+set(GNU_C_FLAGS_RELEASE "${GNU_C_WARNINGS} ${GNU_FLAGS_RELEASE}")
+
+set(CLANG_C_WARNINGS "-Wall -Wextra -Wshadow -Wdouble-promotion -Wconversion -Wsign-conversion -Wpedantic")
+set(CLANG_FLAGS_DEBUG "-ggdb3")
+if(${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
+    set(CLANG_FLAGS_DEBUG "${CLANG_FLAGS_DEBUG} -fsanitize=address -fsanitize=undefined")
+endif()
+set(CLANG_FLAGS_RELEASE "-O3 -DNDEBUG")
+set(CLANG_C_FLAGS_DEBUG "${CLANG_C_WARNINGS} ${CLANG_FLAGS_DEBUG}")
+set(CLANG_C_FLAGS_RELEASE "${CLANG_C_WARNINGS} ${CLANG_FLAGS_RELEASE}")
+
+if (${CMAKE_C_COMPILER_ID} STREQUAL "GNU")
+    set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} ${GNU_C_FLAGS_DEBUG}")
+    set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} ${GNU_C_FLAGS_RELEASE}")
+elseif(${CMAKE_C_COMPILER_ID} STREQUAL "Clang")
+    set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} ${CLANG_C_FLAGS_DEBUG}")
+    set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} ${CLANG_C_FLAGS_RELEASE}")
+endif()
+
+find_package(OpenCL REQUIRED)
+
+project(main)
+add_executable(main "src/main.c")
+target_link_libraries(main OpenCL::OpenCL)
