@@ -40,6 +40,6 @@ endif()
 
 find_package(OpenCL REQUIRED)
 
-project(main)
-add_executable(main "src/main.c")
-target_link_libraries(main OpenCL::OpenCL)
+project(platform_test)
+add_executable(platform_test "src/platform_test.c")
+target_link_libraries(platform_test OpenCL::OpenCL)
