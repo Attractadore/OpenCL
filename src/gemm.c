@@ -150,7 +150,8 @@ void gemm(const float alpha, const float beta, Matrix A, Matrix B, Matrix C, con
 
     {
         const size_t global_size[2] = {C.sz, C.sz};
-        if (clEnqueueNDRangeKernel(queue, gemm_kernel, 2, NULL, global_size, NULL, 0, NULL, NULL)) {
+        const size_t local_size[2] = {8, 8};
+        if (clEnqueueNDRangeKernel(queue, gemm_kernel, 2, NULL, global_size, local_size, 0, NULL, NULL)) {
             fprintf(stderr, "Failed to enqueue work\n");
             return;
         }
