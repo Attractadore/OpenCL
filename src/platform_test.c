@@ -49,8 +49,6 @@ void printDeviceInfo(const cl_device_id device) {
     clGetDeviceInfo(device, CL_DEVICE_MAX_WORK_ITEM_SIZES, max_work_item_sizes_size, max_work_item_sizes, NULL);
     size_t max_workgroup_size = 0;
     clGetDeviceInfo(device, CL_DEVICE_MAX_WORK_GROUP_SIZE, sizeof(max_workgroup_size), &max_workgroup_size, NULL);
-    cl_uint num_subgroups = 0;
-    clGetDeviceInfo(device, CL_DEVICE_MAX_NUM_SUB_GROUPS, sizeof(num_subgroups), &num_subgroups, NULL);
     cl_bool compiler_available = 0;
     clGetDeviceInfo(device, CL_DEVICE_COMPILER_AVAILABLE, sizeof(compiler_available), &compiler_available, NULL);
     cl_bool linker_available = 0;
@@ -66,7 +64,6 @@ void printDeviceInfo(const cl_device_id device) {
     }
     printf("\n");
     printf("Device max work-group size: %zu\n", max_workgroup_size);
-    printf("Device subgroups: %u\n", num_subgroups);
     printf("Device compiler available: %s\n", (compiler_available) ? ("true") : ("false"));
     printf("Device linker available: %s\n", (linker_available) ? ("true") : ("false"));
 
