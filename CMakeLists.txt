@@ -43,3 +43,7 @@ find_package(OpenCL REQUIRED)
 project(platform_test)
 add_executable(platform_test "src/platform_test.c")
 target_link_libraries(platform_test OpenCL::OpenCL)
+
+project(gemm)
+add_executable(gemm "src/gemm.c")
+target_link_libraries(gemm OpenCL::OpenCL)
