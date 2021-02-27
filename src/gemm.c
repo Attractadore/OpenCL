@@ -1,16 +1,24 @@
 #include <CL/cl.h>
 
+#include <assert.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
-#include <stdio.h>
-#include <assert.h>
 
-#define swap(t, l, r)\
-do { \
-    t tmp = l;\
-    l = r;\
-    r = tmp;\
-} while(0)
+#define swap(t, l, r) \
+    do {              \
+        t tmp = l;    \
+        l = r;        \
+        r = tmp;      \
+    } while (0)
+
+typedef unsigned long long nanos;
+
+nanos timeNanos() {
+    struct timespec ts;
+    timespec_get(&ts, TIME_UTC);
+    return ts.tv_sec * 1000000000 + ts.tv_nsec;
+}
 
 typedef struct {
     size_t sz;
@@ -34,34 +42,54 @@ void printMatrix(Matrix m) {
     }
 }
 
-void gemm(const float alpha, const float beta, Matrix A, Matrix B, Matrix C,
-         const cl_device_id device, const cl_context context) {
+Matrix allocateMatrix(const size_t sz) {
+    Matrix m = {
+        .sz = sz,
+        .data = calloc(sz * sz, sizeof(*m.data)),
+    };
+    if (!m.data) {
+        m.sz = 0;
+    }
+    return m;
+}
+
+void freeMatrix(const Matrix m) {
+    free(m.data);
+}
+
+Matrix generateMatrix(const size_t sz) {
+    const Matrix m = allocateMatrix(sz);
+    if (!m.data) {
+        return m;
+    }
+    srand(time(NULL));
+    for (size_t i = 0; i < sz; i++) {
+        for (size_t j = 0; j < sz; j++) {
+            m.data[i * sz + j] = rand() % 100;
+        }
+    }
+    return m;
+}
+
+void gemm(const float alpha, const float beta, Matrix A, Matrix B, Matrix C, const cl_device_id device, const cl_context context) {
     assert(A.sz == B.sz && B.sz == C.sz);
 
     char const* gemm_source =
-    "__kernel void gemm1(const float alpha, const float beta, const ulong K,\n"
-    "                   __global float const* A, __global float const* B, __global float* C) {\n"
-    "   // A = MxK; B = KxN; C = MxN\n"
-    "   const size_t r = get_global_id(1);\n"
-    "   const size_t c = get_global_id(0);\n"
-    "   const size_t M = get_global_size(1);\n"
-    "   const size_t N = get_global_size(0);\n"
-    "   const size_t idx = r * N + c;\n"
-    "   C[idx] = 1.0f;\n"
-    "   return;\n"
-    "   C[idx] *= beta;\n"
-    "   float dp = 0.0f;\n"
-    "   for (size_t i = 0; i < K; i++) {\n"
-    "       dp += A[r * K + i] * B[c * K + i];\n"
-    "   }\n"
-    "   C[idx] += alpha * dp;\n"
-    "   C[idx] = 1;\n"
-    "}\n"
-    "\n"
-    "kernel void gemm(global float const* A, global float* C) {\n"
-    "   const size_t i = get_global_id(0) * get_global_size(1) + get_global_id(1);\n"
-    "   C[i] = A[i];\n"
-    "}\n";
+        "__kernel void gemm(const float alpha, const float beta, const ulong K,\n"
+        "                   __global float const* A, __global float const* B, __global float* C) {\n"
+        "   // A = MxK; B = KxN; C = MxN\n"
+        "   const size_t r = get_global_id(1);\n"
+        "   const size_t c = get_global_id(0);\n"
+        "   const size_t M = get_global_size(1);\n"
+        "   const size_t N = get_global_size(0);\n"
+        "   const size_t idx = r * N + c;\n"
+        "   C[idx] *= beta;\n"
+        "   float dp = 0.0f;\n"
+        "   for (size_t i = 0; i < K; i++) {\n"
+        "       dp += A[r * K + i] * B[c * K + i];\n"
+        "   }\n"
+        "   C[idx] += alpha * dp;\n"
+        "}\n";
 
     cl_int err = CL_SUCCESS;
     const cl_command_queue queue = clCreateCommandQueue(context, device, 0, &err);
@@ -85,16 +113,9 @@ void gemm(const float alpha, const float beta, Matrix A, Matrix B, Matrix C,
     err = CL_SUCCESS;
     const cl_kernel gemm_kernel = clCreateKernel(program, "gemm", &err);
     if (err) {
-        fprintf(stderr, "Failed to gemm kernel\n");
+        fprintf(stderr, "Failed to create gemm kernel\n");
         return;
     }
-
-    puts("A:");
-    printMatrix(A);
-    puts("B:");
-    printMatrix(B);
-    puts("C before gemm:");
-    printMatrix(C);
 
     transposeMatrix(B);
     err = CL_SUCCESS;
@@ -110,83 +131,134 @@ void gemm(const float alpha, const float beta, Matrix A, Matrix B, Matrix C,
         return;
     }
     err = CL_SUCCESS;
-    const cl_mem C_buf = clCreateBuffer(context, CL_MEM_WRITE_ONLY | CL_MEM_USE_HOST_PTR, sizeof(float[C.sz * C.sz]), C.data, &err);
+    const cl_mem C_buf = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(float[C.sz * C.sz]), C.data, &err);
     if (err) {
         fprintf(stderr, "Failed to create buffer for C\n");
         return;
     }
 
-#if 0
-    if (clSetKernelArg(gemm_kernel, 0, sizeof(alpha), &alpha)) {
-        fprintf(stderr, "Failed to set kernel argument\n");
-        return;
-    }
-    if (clSetKernelArg(gemm_kernel, 1, sizeof(beta), &beta)) {
-        fprintf(stderr, "Failed to set kernel argument\n");
-        return;
-    }
-    if (clSetKernelArg(gemm_kernel, 2, sizeof(A.sz), &A.sz)) {
-        fprintf(stderr, "Failed to set kernel argument\n");
-        return;
-    }
-    if (clSetKernelArg(gemm_kernel, 4, sizeof(void*), &B_buf)) {
-        fprintf(stderr, "Failed to set kernel argument\n");
-        return;
-    }
-#endif
-    if (clSetKernelArg(gemm_kernel, 0, sizeof(void*), &A_buf)) {
-        fprintf(stderr, "Failed to set kernel argument\n");
-        return;
-    }
-    if (clSetKernelArg(gemm_kernel, 1, sizeof(void*), &C_buf)) {
+    err = clSetKernelArg(gemm_kernel, 0, sizeof(alpha), &alpha) ||
+          clSetKernelArg(gemm_kernel, 1, sizeof(beta), &beta) ||
+          clSetKernelArg(gemm_kernel, 2, sizeof(A.sz), &A.sz) ||
+          clSetKernelArg(gemm_kernel, 3, sizeof(void*), &A_buf) ||
+          clSetKernelArg(gemm_kernel, 4, sizeof(void*), &B_buf) ||
+          clSetKernelArg(gemm_kernel, 5, sizeof(void*), &C_buf);
+    if (err) {
         fprintf(stderr, "Failed to set kernel argument\n");
         return;
     }
 
     {
         const size_t global_size[2] = {C.sz, C.sz};
-        const size_t local_size[2] = {1, 1};
-        if (clEnqueueNDRangeKernel(queue, gemm_kernel, 2, NULL, global_size, local_size, 0, NULL, NULL)) {
+        if (clEnqueueNDRangeKernel(queue, gemm_kernel, 2, NULL, global_size, NULL, 0, NULL, NULL)) {
             fprintf(stderr, "Failed to enqueue work\n");
             return;
         }
     }
     clFinish(queue);
-    
-    puts("C after gemm:");
-    printMatrix(C);
 
     transposeMatrix(B);
 }
 
+cl_device_id* getDevices(size_t* const num_devices_p) {
+    cl_uint num_platforms = 0;
+    if (clGetPlatformIDs(0, NULL, &num_platforms)) {
+        return NULL;
+    }
+    cl_platform_id* const platforms = calloc(num_platforms, sizeof(*platforms));
+    if (!platforms) {
+        return NULL;
+    }
+    if (clGetPlatformIDs(num_platforms, platforms, NULL)) {
+        free(platforms);
+    }
+    size_t num_devices = 0;
+    for (size_t i = 0; i < num_platforms; i++) {
+        cl_uint num_platform_devices = 0;
+        if (clGetDeviceIDs(platforms[i], CL_DEVICE_TYPE_ALL, 0, NULL, &num_platform_devices)) {
+            free(platforms);
+            return NULL;
+        }
+        num_devices += num_platform_devices;
+    }
+
+    cl_device_id* const devices = calloc(num_devices, sizeof(*devices));
+    if (!devices) {
+        free(platforms);
+        return NULL;
+    }
+    cl_device_id* current_devices = devices;
+    for (size_t i = 0; i < num_platforms; i++) {
+        cl_uint num_platform_devices = 0;
+        if (clGetDeviceIDs(platforms[i], CL_DEVICE_TYPE_ALL, num_devices - (current_devices - devices), current_devices, &num_platform_devices)) {
+            free(devices);
+            free(platforms);
+            return NULL;
+        }
+        current_devices += num_platform_devices;
+    }
+
+    free(platforms);
+
+    *num_devices_p = num_devices;
+
+    return devices;
+}
+
+void printDeviceName(const cl_device_id device) {
+    size_t buffer_size = 0;
+    if (clGetDeviceInfo(device, CL_DEVICE_NAME, 0, NULL, &buffer_size)) {
+        return;
+    }
+    char* const buffer = calloc(buffer_size, sizeof(char));
+    if (!buffer) {
+        return;
+    }
+    if (clGetDeviceInfo(device, CL_DEVICE_NAME, buffer_size, buffer, NULL)) {
+        free(buffer);
+        return;
+    }
+    printf("%s\n", buffer);
+}
+
 int main() {
+    const size_t job_size = 1024;
+    Matrix A = generateMatrix(job_size);
+    Matrix B = generateMatrix(job_size);
+    size_t num_devices = 0;
+    cl_device_id* const devices = getDevices(&num_devices);
+    if (!A.data || !B.data || !devices) {
+        freeMatrix(A);
+        freeMatrix(B);
+        free(devices);
+        return -1;
+    }
 
-    cl_platform_id platform;
-    clGetPlatformIDs(1, &platform, NULL);
-    cl_device_id device;
-    clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 1, &device, NULL);
-    const cl_context context = clCreateContext(NULL, 1, &device, NULL, NULL, NULL);
+    for (size_t i = 0; i < num_devices; i++) {
+        printDeviceName(devices[i]);
+        const cl_context context = clCreateContext(NULL, 1, devices + i, NULL, NULL, NULL);
+        Matrix C = allocateMatrix(job_size);
+        if (!C.data) {
+            freeMatrix(A);
+            freeMatrix(B);
+            free(devices);
+            return -1;
+        }
 
-    float A_data[] = {2.0f, 0.0f, 0.0f, 1.0f};
-    float B_data[] = {1.0f, 0.0f, 0.0f, 2.0f};
-    float C_data[] = {0.0f, 1.0f, 0.0f, 0.0f};
+        const nanos start = timeNanos();
 
-    Matrix A = {
-        2,
-        A_data,
-    };
+        gemm(1, 1, A, B, C, devices[i], context);
 
-    Matrix B = {
-        2,
-        B_data,
-    };
+        const nanos end = timeNanos();
 
-    Matrix C = {
-        2,
-        C_data,
-    };
+        printf("GEMM in %gs\n", (end - start) / 1e9);
 
-    gemm(1, 1, A, B, C, device, context);
-    
+        freeMatrix(C);
+    }
+
+    freeMatrix(A);
+    freeMatrix(B);
+    free(devices);
+
     return 0;
 }
