@@ -38,6 +38,13 @@ elseif(${CMAKE_C_COMPILER_ID} STREQUAL "Clang")
     set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} ${CLANG_C_FLAGS_RELEASE}")
 endif()
 
+function(add_kernel_source TARGET KERNEL)
+    set(KERNEL_SOURCE_PATH ${CMAKE_SOURCE_DIR}/src/${KERNEL})
+    set(KERNEL_BUILD_PATH ${CMAKE_BINARY_DIR}/${KERNEL})
+    configure_file(${KERNEL_SOURCE_PATH} ${KERNEL_BUILD_PATH})
+    target_sources(${TARGET} PRIVATE ${KERNEL_SOURCE_PATH})
+endfunction(add_kernel_source)
+
 find_package(OpenCL REQUIRED)
 
 project(platform_test)
@@ -46,4 +53,5 @@ target_link_libraries(platform_test OpenCL::OpenCL)
 
 project(gemm)
 add_executable(gemm "src/gemm.c")
+add_kernel_source(gemm "gemm.clc")
 target_link_libraries(gemm OpenCL::OpenCL)

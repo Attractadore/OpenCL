@@ -71,41 +71,90 @@ Matrix generateMatrix(const size_t sz) {
     return m;
 }
 
+char* readFileAsString(char const* file_name) {
+    FILE* file = fopen(file_name, "rb");
+    if (!file) {
+        goto err;
+    }
+
+    if (fseek(file, 0, SEEK_END)) {
+        goto close_file;
+    }
+    const size_t end = ftell(file);
+    if (fseek(file, 0, SEEK_SET)) {
+        goto close_file;
+    }
+    const size_t beg = ftell(file);
+    if (beg == -1L || end == -1L) {
+        goto close_file;
+    }
+    const size_t file_size = end - beg;
+
+    char* buffer = calloc(file_size + 1, sizeof(*buffer));
+    if (!buffer) {
+        goto close_file;
+        return NULL;
+    }
+
+    if (fread(buffer, sizeof(*buffer), file_size, file) != file_size) {
+        goto free_buffer;
+    }
+
+    fclose(file);
+
+    return buffer;
+
+free_buffer:
+    free(buffer);
+close_file:
+    fclose(file);
+err:
+    return NULL;
+}
+
+#define MSG_READ_SOURCE_FAILED "Failed to read gemm kernel source"
+#define MSG_QUEUE_CREATE_FAILED "Failed to create queue"
+#define MSG_BUILD_SOURCE_FAILED "Failed to build gemm program"
+#define MSG_CREATE_KERNEL_FAILED "Failed to create gemm kernel"
+#define MSG_CREATE_BUFFER_FAILED "Failed to create buffer"
+#define MSG_SET_KERNEL_ARGUMENTS_FAILED "Failed to set gemm kernel arguments"
+#define MSG_ENQUEUE_KERNEL_FAILED "Failed to enqueue gemm kernel"
+#define MSG_READ_RESULT_FAILED "Failed to read result"
+
 void gemm(const float alpha, const float beta, Matrix A, Matrix B, Matrix C, const cl_device_id device, const cl_context context) {
     assert(A.sz == B.sz && B.sz == C.sz);
 
-    char const* gemm_source =
-        "__kernel void gemm(const float alpha, const float beta, const ulong K,\n"
-        "                   __global float const* A, __global float const* B, __global float* C) {\n"
-        "   // A = MxK; B = KxN; C = MxN\n"
-        "   const size_t r = get_global_id(1);\n"
-        "   const size_t c = get_global_id(0);\n"
-        "   const size_t M = get_global_size(1);\n"
-        "   const size_t N = get_global_size(0);\n"
-        "   const size_t idx = r * N + c;\n"
-        "   C[idx] *= beta;\n"
-        "   float dp = 0.0f;\n"
-        "   for (size_t i = 0; i < K; i++) {\n"
-        "       dp += A[r * K + i] * B[c * K + i];\n"
-        "   }\n"
-        "   C[idx] += alpha * dp;\n"
-        "}\n";
+    char const* gemm_source = readFileAsString("gemm.clc");
+    char const* err_msg = NULL;
+    if (!gemm_source) {
+        err_msg = MSG_READ_SOURCE_FAILED;
+        goto err;
+    }
 
     cl_int err = CL_SUCCESS;
     const cl_command_queue queue = clCreateCommandQueue(context, device, 0, &err);
     if (err) {
-        fprintf(stderr, "Failed to create queue\n");
-        return;
+        err_msg = MSG_QUEUE_CREATE_FAILED;
+        goto free_source;
     }
 
     const cl_program program = clCreateProgramWithSource(context, 1, &gemm_source, NULL, NULL);
     if (clBuildProgram(program, 1, &device, NULL, NULL, NULL)) {
-        fprintf(stderr, "Failed to build gemm program:\n");
+        err_msg = MSG_BUILD_SOURCE_FAILED;
         size_t message_buffer_size = 0;
-        clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, 0, NULL, &message_buffer_size);
+        if (clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, 0, NULL, &message_buffer_size)) {
+            goto free_source;
+        }
         char* const message = calloc(message_buffer_size, sizeof(*message));
-        clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, message_buffer_size, message, NULL);
-        printf("%s\n", message);
+        if (!message) {
+            goto free_source;
+        }
+        if (clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, message_buffer_size, message, NULL)) {
+            free(message);
+            goto free_source;
+        }
+        fprintf(stderr, MSG_BUILD_SOURCE_FAILED ":\n%s", message);
+        free(gemm_source);
         free(message);
         return;
     }
@@ -113,28 +162,27 @@ void gemm(const float alpha, const float beta, Matrix A, Matrix B, Matrix C, con
     err = CL_SUCCESS;
     const cl_kernel gemm_kernel = clCreateKernel(program, "gemm", &err);
     if (err) {
-        fprintf(stderr, "Failed to create gemm kernel\n");
-        return;
+        goto free_source;
     }
 
+    err = CL_SUCCESS;
+    const cl_mem A_buf = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof(float[A.sz * A.sz]), A.data, &err);
+    if (err) {
+        err_msg = MSG_CREATE_BUFFER_FAILED " for A";
+        goto free_source;
+    }
     transposeMatrix(B);
     err = CL_SUCCESS;
-    const cl_mem A_buf = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_USE_HOST_PTR, sizeof(float[A.sz * A.sz]), A.data, &err);
+    const cl_mem B_buf = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof(float[B.sz * B.sz]), B.data, &err);
     if (err) {
-        fprintf(stderr, "Failed to create buffer for A\n");
-        return;
+        err_msg = MSG_CREATE_BUFFER_FAILED " for B";
+        goto transpose_B;
     }
     err = CL_SUCCESS;
-    const cl_mem B_buf = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_USE_HOST_PTR, sizeof(float[B.sz * B.sz]), B.data, &err);
+    const cl_mem C_buf = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(float[C.sz * C.sz]), C.data, &err);
     if (err) {
-        fprintf(stderr, "Failed to create buffer for B\n");
-        return;
-    }
-    err = CL_SUCCESS;
-    const cl_mem C_buf = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(float[C.sz * C.sz]), C.data, &err);
-    if (err) {
-        fprintf(stderr, "Failed to create buffer for C\n");
-        return;
+        err_msg = MSG_CREATE_BUFFER_FAILED " for C";
+        goto transpose_B;
     }
 
     err = clSetKernelArg(gemm_kernel, 0, sizeof(alpha), &alpha) ||
@@ -144,21 +192,37 @@ void gemm(const float alpha, const float beta, Matrix A, Matrix B, Matrix C, con
           clSetKernelArg(gemm_kernel, 4, sizeof(void*), &B_buf) ||
           clSetKernelArg(gemm_kernel, 5, sizeof(void*), &C_buf);
     if (err) {
-        fprintf(stderr, "Failed to set kernel argument\n");
-        return;
+        err_msg = MSG_SET_KERNEL_ARGUMENTS_FAILED;
+        goto transpose_B;
     }
 
     {
         const size_t global_size[2] = {C.sz, C.sz};
         const size_t local_size[2] = {8, 8};
-        if (clEnqueueNDRangeKernel(queue, gemm_kernel, 2, NULL, global_size, local_size, 0, NULL, NULL)) {
-            fprintf(stderr, "Failed to enqueue work\n");
-            return;
+        cl_event e;
+        if (clEnqueueNDRangeKernel(queue, gemm_kernel, 2, NULL, global_size, local_size, 0, NULL, &e)) {
+            err_msg = MSG_ENQUEUE_KERNEL_FAILED;
+            goto transpose_B;
+        }
+
+        if (clEnqueueReadBuffer(queue, C_buf, 1, 0, sizeof(float[C.sz * C.sz]), C.data, 1, &e, NULL)) {
+            err_msg = MSG_READ_RESULT_FAILED;
+            goto finish_work;
         }
     }
-    clFinish(queue);
 
+    clFinish(queue);
     transposeMatrix(B);
+    return;
+
+finish_work:
+    clFinish(queue);
+transpose_B:
+    transposeMatrix(B);
+free_source:
+    free(gemm_source);
+err:
+    fprintf(stderr, "%s\n", err_msg);
 }
 
 cl_device_id* getDevices(size_t* const num_devices_p) {
